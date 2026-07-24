@@ -3,9 +3,22 @@
 #include "../system/system.h"
 #include "../logs/logs.h"
 
+#include <regex>
+
 static std::string normalise_assembly(const std::string_view input, const std::unordered_map<std::string, std::uint64_t>& symbols)
 {
     std::string output(input.begin(), input.end());
+
+    std::erase(output, '\r');
+
+    output = std::regex_replace(output, std::regex(R"(\n\s*\n+)"), "\n");
+
+    std::ranges::replace(output, '\n', ';');
+
+    if (!output.ends_with(';'))
+    {
+        output.push_back(';');
+    }
 
     const auto search_fn = [&output](const std::size_t offset) -> std::size_t
         {
@@ -42,8 +55,6 @@ static std::string normalise_assembly(const std::string_view input, const std::u
 
         const std::string_view instruction(output.data() + static_cast<std::uint32_t>(previous), count);
 
-        spdlog::info("instruction: '{}'", instruction);
-
         if (instruction.starts_with("limp"))
         {
             const auto comma = instruction.find_first_of(',');
@@ -57,9 +68,14 @@ static std::string normalise_assembly(const std::string_view input, const std::u
                     const std::size_t symbol_count = instruction.size() - symbol_start;
                     const std::string symbol_view(instruction.data() + symbol_start, symbol_count);
 
-                    const std::uint64_t symbol_address = symbols.at(symbol_view);
+                    LOG_INFO("found import to normalise at index {} with value '{}' {}, {}", i, symbol_view, comma, symbol_start);
 
-                    spdlog::info("found import to normalise at index {} with value '{}' {}, {}", i, symbol_view, comma, symbol_start);
+                    if (!symbols.contains(symbol_view))
+                    {
+                        throw std::runtime_error(std::format("unable to find symbol '{}'", symbol_view));
+                    }
+
+                    const std::uint64_t symbol_address = symbols.at(symbol_view);
 
                     const std::string formatted_address = std::format("0x{:X}", symbol_address);
 
@@ -85,11 +101,11 @@ std::vector<std::uint8_t> script::compile(const std::string_view script_contents
 
 	assembler.set_syntax(KS_OPT_SYNTAX_INTEL);
 
-    const auto symbols = sys::kernel::compile_symbol_list();
-    const auto normalised_script = normalise_assembly(script_contents, symbols);
-
 	try
 	{
+        const auto symbols = sys::kernel::compile_symbol_list();
+        const auto normalised_script = normalise_assembly(script_contents, symbols);
+
         const auto encoding = assembler.assemble(normalised_script);
 
         if (!encoding)
